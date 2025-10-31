@@ -22,9 +22,9 @@
     <div v-else class="grid">
       <div v-for="card in cards" :key="card.key" class="card">
         <div class="card-header">
-          <div class="name">
+          <button class="name linklike" @click="openLog(card.athlete)">
             {{ personName(card.athlete) }}
-          </div>
+          </button>
           <div class="email">{{ card.athlete.email }}</div>
         </div>
         <div class="metrics">
@@ -50,6 +50,21 @@
         <div class="week">Week starting: {{ formatDate(card.weekStart) }}</div>
       </div>
     </div>
+
+    <!-- Read-only training log modal -->
+    <div v-if="logModal.open" class="modal-overlay" @click.self="closeLog">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 class="modal-title">{{ personName(logModal.athlete) }}</h3>
+          <button class="btn-secondary" @click="closeLog">Close</button>
+        </div>
+        <ReadOnlyTrainingLog
+          v-if="logModal.userId"
+          :user-id="logModal.userId"
+        />
+        <div v-else class="err">No user ID for this athlete.</div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -58,6 +73,7 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { useAuth } from "../composables/useAuth";
 import { getTeamWeeklySummaries } from "../api/trainingRecords";
 import Chart from "chart.js/auto";
+import ReadOnlyTrainingLog from "../components/ReadOnlyTrainingLog.vue";
 
 const { user } = useAuth();
 const loading = ref(false);
@@ -355,6 +371,30 @@ onUnmounted(() => {
     chartInstance = null;
   }
 });
+
+// Read-only training log modal state and helpers
+const logModal = ref({ open: false, userId: null, athlete: null });
+function athleteUserId(a) {
+  return (
+    a?.userId ||
+    a?.id ||
+    a?._id ||
+    a?.uid ||
+    a?.user?.id ||
+    a?.user?._id ||
+    null
+  );
+}
+function openLog(athlete) {
+  logModal.value = {
+    open: true,
+    userId: athleteUserId(athlete) ? String(athleteUserId(athlete)) : null,
+    athlete,
+  };
+}
+function closeLog() {
+  logModal.value = { open: false, userId: null, athlete: null };
+}
 </script>
 
 <style scoped>
@@ -437,6 +477,17 @@ onUnmounted(() => {
   color: var(--color-heading);
   font-size: 1.2rem;
 }
+.name.linklike {
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--color-heading);
+}
+.name.linklike:hover {
+  text-decoration: underline;
+}
 .email {
   color: var(--vt-c-text-light-2);
   font-size: 0.9rem;
@@ -482,5 +533,39 @@ onUnmounted(() => {
 }
 .err {
   color: var(--color-accent);
+}
+
+/* Modal styles */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+.modal-card {
+  width: min(100%, 1000px);
+  height: min(90vh, 720px);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid var(--gray-300);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.modal-title {
+  margin: 0;
+  font-weight: 800;
+  color: var(--color-heading);
 }
 </style>
