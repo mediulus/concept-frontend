@@ -1,7 +1,7 @@
 <template>
   <div class="log-page">
     <div class="header">
-      <h1>Training Log</h1>
+      <h1 class="log-title">Training Log</h1>
       <div class="header-actions">
         <button class="jump-today-btn" @click="jumpToToday">
           Jump to Today
@@ -369,6 +369,15 @@ onMounted(async () => {
   color: #1a1a1a;
 }
 
+.log-title {
+  font-size: 2.6rem !important;
+  font-weight: 900;
+  color: var(--color-accent) !important;
+  letter-spacing: -0.01em;
+  font-family: "Open Sans", -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -376,7 +385,7 @@ onMounted(async () => {
 }
 
 .jump-today-btn {
-  background: var(--color-accent);
+  background: #454545;
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -389,7 +398,7 @@ onMounted(async () => {
 }
 
 .jump-today-btn:hover {
-  background: var(--accent-700);
+  background: #454545;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
 }
 
@@ -410,7 +419,8 @@ onMounted(async () => {
   width: 100%;
   border-collapse: collapse;
   background: white;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "Rethink Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
 }
 

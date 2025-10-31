@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Racing+Sans+One&family=Rethink+Sans:ital,wght@0,400..800;1,400..800&display=swap");
 /* color palette from <https://github.com/vuejs/theme> */
 :root {
   --vt-c-white: #ffffff;
@@ -77,10 +78,10 @@
 body {
   min-height: 100vh;
   color: var(--color-text);
-  background: linear-gradient(to bottom, #ffffff 0%, #f7f7f8 100%);
+  background: var(--color-accent);
   transition: color 0.3s ease, background-color 0.3s ease;
   line-height: 1.6;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display",
+  font-family: "Open Sans", -apple-system, BlinkMacSystemFont, "SF Pro Display",
     "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   font-size: 15px;
   font-weight: 400;

@@ -1,6 +1,10 @@
 <script setup>
 import { ref, computed, reactive, onMounted, watch } from "vue";
 import { createEvent, getEventsByDate } from "../api/calendarEvents";
+import {
+  editEvent as apiEditEvent,
+  deleteEvent as apiDeleteEvent,
+} from "../api/events";
 import { sendNotificationToTeam } from "../api/notifications";
 import { useAuth } from "../composables/useAuth";
 
@@ -89,12 +93,105 @@ const eventsLoading = ref(false);
 const eventsError = ref("");
 const eventsByDay = ref({}); // { [day: number]: Event[] }
 const selectedEvent = ref(null);
+const editingEvent = ref(false);
+const showDayOverlay = ref(false);
+const editForm = reactive({
+  title: "",
+  location: "",
+  startAt: "",
+  endAt: "",
+  description: "",
+  link: "",
+});
+
+function toLocalDateTimeInput(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+function startEditing() {
+  if (!selectedEvent.value) return;
+  const e = selectedEvent.value;
+  editForm.title = e.title || "";
+  editForm.location = e.location || "";
+  editForm.description = e.description || "";
+  editForm.link = e.link || "";
+  try {
+    editForm.startAt = toLocalDateTimeInput(new Date(e.startTime));
+    editForm.endAt = toLocalDateTimeInput(new Date(e.endTime));
+  } catch {
+    editForm.startAt = "";
+    editForm.endAt = "";
+  }
+  editingEvent.value = true;
+}
+
+function cancelEdit() {
+  editingEvent.value = false;
+}
+
+async function saveEdit() {
+  if (!selectedEvent.value) return;
+  const updates = {};
+  if (editForm.title !== selectedEvent.value.title)
+    updates.title = editForm.title.trim();
+  if (editForm.location !== selectedEvent.value.location)
+    updates.location = editForm.location.trim();
+  if ((editForm.description || "") !== (selectedEvent.value.description || ""))
+    updates.description = editForm.description;
+  if ((editForm.link || "") !== (selectedEvent.value.link || ""))
+    updates.link = editForm.link;
+  if (editForm.startAt)
+    updates.startTime = new Date(editForm.startAt).toISOString();
+  if (editForm.endAt) updates.endTime = new Date(editForm.endAt).toISOString();
+
+  try {
+    const res = await apiEditEvent({
+      eventId: selectedEvent.value._id,
+      updates,
+    });
+    if (res?.error) {
+      alert(res.error);
+      return;
+    }
+    // Refresh month events and re-open the edited event
+    await loadMonthEvents();
+    // Find the same day and set selectedEvent from fresh data if possible
+    editingEvent.value = false;
+  } catch (e) {
+    alert(e?.response?.data?.error || e?.message || "Failed to save changes.");
+  }
+}
+
+async function confirmDelete() {
+  if (!selectedEvent.value) return;
+  if (!confirm("Delete this event? This cannot be undone.")) return;
+  try {
+    const res = await apiDeleteEvent({ eventId: selectedEvent.value._id });
+    if (res?.error) {
+      alert(res.error);
+      return;
+    }
+    await loadMonthEvents();
+    closeEvent();
+  } catch (e) {
+    alert(e?.response?.data?.error || e?.message || "Failed to delete event.");
+  }
+}
 
 function openEvent(e) {
   selectedEvent.value = e;
+  editingEvent.value = false;
+  showDayOverlay.value = false; // close day overlay when opening an event
 }
 function closeEvent() {
   selectedEvent.value = null;
+  editingEvent.value = false;
 }
 
 async function onSelectDay(day) {
@@ -102,6 +199,7 @@ async function onSelectDay(day) {
   selectedDay.value = day;
   eventsLoading.value = true;
   eventsError.value = "";
+  showDayOverlay.value = true;
   // leave other days cached
   try {
     const res = await getEventsByDate({
@@ -119,6 +217,20 @@ async function onSelectDay(day) {
   } finally {
     eventsLoading.value = false;
   }
+}
+
+function closeDayOverlay() {
+  showDayOverlay.value = false;
+}
+
+function formatDayHeader(y, m0, d) {
+  const dt = new Date(y, m0, d);
+  return dt.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 // ----------------- Create Event (UI only) -----------------
@@ -366,15 +478,15 @@ watch([currentYear, currentMonth], () => {
     </div>
 
     <div class="create-bar">
-      <button type="button" class="btn" @click="openCreateForm">
-        {{ showCreate ? "Close" : "Create Event" }}
-      </button>
       <button
         type="button"
         class="btn btn-notification"
         @click="openNotificationMode"
       >
         {{ showNotification ? "Close" : "Create Notification" }}
+      </button>
+      <button type="button" class="btn" @click="openCreateForm">
+        {{ showCreate ? "Close" : "＋ Create Event" }}
       </button>
     </div>
 
@@ -557,6 +669,63 @@ watch([currentYear, currentMonth], () => {
       </tbody>
     </table>
 
+    <!-- Day overlay: shows all events for the selected day in a larger view -->
+    <div
+      v-if="showDayOverlay && selectedDay"
+      class="modal-backdrop"
+      @click.self="closeDayOverlay"
+    >
+      <div class="modal day-modal">
+        <div class="modal-header">
+          <div class="modal-title">
+            {{ formatDayHeader(currentYear, currentMonth, selectedDay) }}
+          </div>
+          <button type="button" class="modal-close" @click="closeDayOverlay">
+            ×
+          </button>
+        </div>
+        <div class="modal-body">
+          <div v-if="eventsLoading" class="muted">Loading events…</div>
+          <div v-else>
+            <div
+              v-if="(eventsByDay[selectedDay] || []).length === 0"
+              class="muted"
+            >
+              No events scheduled.
+            </div>
+            <ul v-else class="day-overlay-list">
+              <li
+                v-for="e in eventsByDay[selectedDay]"
+                :key="e._id"
+                class="overlay-item"
+                @click="openEvent(e)"
+              >
+                <div class="overlay-time">
+                  {{
+                    e.startTime.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  }}
+                  –
+                  {{
+                    e.endTime.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  }}
+                </div>
+                <div class="overlay-main">
+                  <div class="overlay-title">{{ e.title }}</div>
+                  <div class="overlay-sub">{{ e.location }}</div>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Event details modal -->
     <div v-if="selectedEvent" class="modal-backdrop" @click.self="closeEvent">
       <div class="modal">
@@ -567,26 +736,95 @@ watch([currentYear, currentMonth], () => {
           </button>
         </div>
         <div class="modal-body">
-          <div class="modal-row">
-            <strong>When:</strong>
-            {{ selectedEvent.startTime.toLocaleString() }} –
-            {{ selectedEvent.endTime.toLocaleString() }}
-          </div>
-          <div class="modal-row">
-            <strong>Where:</strong> {{ selectedEvent.location }}
-          </div>
-          <div class="modal-row" v-if="selectedEvent.description">
-            <strong>Notes:</strong> {{ selectedEvent.description }}
-          </div>
-          <div class="modal-row" v-if="selectedEvent.link">
-            <strong>Link:</strong>
-            <a :href="selectedEvent.link" target="_blank" rel="noopener">{{
-              selectedEvent.link
-            }}</a>
-          </div>
+          <template v-if="!editingEvent">
+            <div class="modal-row">
+              <strong>When:</strong>
+              {{ selectedEvent.startTime.toLocaleString() }} –
+              {{ selectedEvent.endTime.toLocaleString() }}
+            </div>
+            <div class="modal-row">
+              <strong>Where:</strong> {{ selectedEvent.location }}
+            </div>
+            <div class="modal-row" v-if="selectedEvent.description">
+              <strong>Notes:</strong> {{ selectedEvent.description }}
+            </div>
+            <div class="modal-row" v-if="selectedEvent.link">
+              <strong>Link:</strong>
+              <a :href="selectedEvent.link" target="_blank" rel="noopener">{{
+                selectedEvent.link
+              }}</a>
+            </div>
+          </template>
+          <template v-else>
+            <div class="form-grid">
+              <label>
+                <span>Title</span>
+                <input class="input" v-model="editForm.title" />
+              </label>
+              <label>
+                <span>Location</span>
+                <input class="input" v-model="editForm.location" />
+              </label>
+              <label>
+                <span>Start</span>
+                <input
+                  class="input"
+                  type="datetime-local"
+                  v-model="editForm.startAt"
+                />
+              </label>
+              <label>
+                <span>End</span>
+                <input
+                  class="input"
+                  type="datetime-local"
+                  v-model="editForm.endAt"
+                />
+              </label>
+              <label class="full">
+                <span>Description</span>
+                <textarea
+                  class="input"
+                  rows="2"
+                  v-model="editForm.description"
+                ></textarea>
+              </label>
+              <label class="full">
+                <span>Link</span>
+                <input class="input" type="url" v-model="editForm.link" />
+              </label>
+            </div>
+          </template>
         </div>
-        <div class="modal-actions">
-          <button type="button" class="btn" @click="closeEvent">Close</button>
+        <div class="modal-actions" style="gap: 8px">
+          <button
+            v-if="!editingEvent"
+            type="button"
+            class="btn btn-dark"
+            @click="startEditing"
+          >
+            Edit
+          </button>
+          <button
+            v-if="editingEvent"
+            type="button"
+            class="btn"
+            @click="saveEdit"
+          >
+            Save
+          </button>
+          <button
+            v-if="editingEvent"
+            type="button"
+            class="btn"
+            style="background: #6b7280"
+            @click="cancelEdit"
+          >
+            Cancel
+          </button>
+          <button type="button" class="btn btn-dark" @click="confirmDelete">
+            Delete
+          </button>
         </div>
       </div>
     </div>
@@ -597,12 +835,17 @@ watch([currentYear, currentMonth], () => {
 /* Modern and polished calendar UI */
 .calendar-container {
   max-width: 1100px;
-  margin: 20px auto;
-  background: white;
-  border-radius: 16px;
+  margin: 28px auto;
+  background: var(--gray-200); /* slightly darker grey */
+  border-radius: 0; /* sharp edges */
   padding: 24px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-    0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  /* stronger floating shadow on maroon bg */
+  box-shadow: 0 35px 80px rgba(0, 0, 0, 0.45), 0 20px 30px rgba(0, 0, 0, 0.25),
+    0 8px 12px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  /* white line separated from the card to reveal maroon in between */
+  outline: 2px solid #ffffff;
+  outline-offset: 12px;
 }
 
 .calendar-header {
@@ -614,10 +857,10 @@ watch([currentYear, currentMonth], () => {
   border-bottom: 2px solid #f3f4f6;
 }
 .month-title {
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: var(--color-heading);
-  letter-spacing: -0.025em;
+  font-size: 2.6rem;
+  font-weight: 800;
+  color: var(--color-accent); /* match background maroon */
+  letter-spacing: -0.01em;
 }
 .nav-btn {
   background: white;
@@ -677,7 +920,7 @@ watch([currentYear, currentMonth], () => {
 }
 .input {
   padding: 10px 14px;
-  border: 2px solid var(--gray-300);
+  border: 2px var(--gray-300) solid;
   border-radius: 8px;
   width: 100%;
   font-size: 1rem;
@@ -713,11 +956,18 @@ watch([currentYear, currentMonth], () => {
 .btn:hover {
   background: var(--accent-700);
   transform: translateY(-1px);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+  box-shadow: 0 4px 6px rgba(117, 0, 20, 0.1),
     0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 .btn:active {
   transform: translateY(0);
+}
+.btn-dark {
+  background: #454545;
+  color: #ffffff;
+}
+.btn-dark:hover {
+  background: #454545;
 }
 .btn-notification {
   background: #111111;
@@ -744,8 +994,8 @@ watch([currentYear, currentMonth], () => {
   table-layout: fixed;
   font-size: 0.9375rem;
   overflow: hidden;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+  border-radius: 0; /* sharp edges */
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.06);
 }
 .calendar-table thead th {
   font-weight: 700;
@@ -757,11 +1007,10 @@ watch([currentYear, currentMonth], () => {
   letter-spacing: 0.1em;
   border-bottom: 2px solid var(--gray-300);
 }
-.calendar-table th:first-child {
-  border-top-left-radius: 12px;
-}
+.calendar-table th:first-child,
 .calendar-table th:last-child {
-  border-top-right-radius: 12px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 .calendar-table th,
 .calendar-table td {
@@ -799,7 +1048,7 @@ watch([currentYear, currentMonth], () => {
   color: var(--color-text);
   font-weight: 500;
   font-size: 1rem;
-  border-radius: 8px;
+  border-radius: 0; /* sharp edges */
   transition: all 0.15s ease;
 }
 .day-btn:hover {
@@ -935,6 +1184,9 @@ watch([currentYear, currentMonth], () => {
     0 10px 10px -5px rgba(0, 0, 0, 0.04);
   animation: slideUp 0.3s ease;
 }
+.day-modal {
+  width: min(760px, 94vw);
+}
 @keyframes slideUp {
   from {
     transform: translateY(20px);
@@ -982,10 +1234,46 @@ watch([currentYear, currentMonth], () => {
   display: grid;
   gap: 16px;
 }
+.day-overlay-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+.overlay-item {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  align-items: center;
+  gap: 12px;
+  background: #fff;
+  border: 2px solid var(--gray-300);
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.overlay-item:hover {
+  border-color: var(--color-accent);
+  transform: translateY(-1px);
+}
+.overlay-time {
+  font-weight: 700;
+  color: var(--color-heading);
+}
+.overlay-title {
+  font-weight: 800;
+}
+.overlay-sub {
+  color: var(--gray-600);
+  font-size: 0.95rem;
+}
 .modal-row {
   display: flex;
   gap: 8px;
   line-height: 1.6;
+  flex-wrap: wrap; /* allow long content to wrap to next line */
+  align-items: baseline;
 }
 .modal-row strong {
   color: #6b7280;
@@ -996,6 +1284,10 @@ watch([currentYear, currentMonth], () => {
   color: var(--color-accent);
   text-decoration: underline;
   font-weight: 500;
+  white-space: normal;
+  overflow-wrap: anywhere; /* break long URLs */
+  word-break: break-word;
+  max-width: 100%;
 }
 .modal-row a:hover {
   color: var(--accent-700);

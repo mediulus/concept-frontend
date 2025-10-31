@@ -8,6 +8,14 @@
       </div>
     </div>
 
+    <!-- Team trends line chart -->
+    <div class="trend-card">
+      <h2 class="trend-title">Team Trends (last 8 weeks)</h2>
+      <div class="trend-chart">
+        <canvas ref="chartEl" aria-label="Team trends line chart" />
+      </div>
+    </div>
+
     <div v-if="err" class="err">{{ err }}</div>
     <div v-else-if="loading" class="loading">Loading…</div>
 
@@ -15,7 +23,7 @@
       <div v-for="card in cards" :key="card.key" class="card">
         <div class="card-header">
           <div class="name">
-            {{ card.athlete.displayName || card.athlete.email }}
+            {{ personName(card.athlete) }}
           </div>
           <div class="email">{{ card.athlete.email }}</div>
         </div>
@@ -46,14 +54,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { useAuth } from "../composables/useAuth";
 import { getTeamWeeklySummaries } from "../api/trainingRecords";
+import Chart from "chart.js/auto";
 
 const { user } = useAuth();
 const loading = ref(false);
 const err = ref("");
 const cards = ref([]);
+const chartEl = ref(null);
+let chartInstance = null;
 
 function toLocalYMD(date = new Date()) {
   const y = date.getFullYear();
@@ -91,19 +102,215 @@ function formatDate(d) {
   });
 }
 
+function personName(p) {
+  if (!p) return "";
+  const first = p.firstName?.trim?.();
+  const last = p.lastName?.trim?.();
+  if (first || last) return [first, last].filter(Boolean).join(" ");
+  if (p.name) return p.name;
+  if (p.fullName) return p.fullName;
+  if (p.displayName) return p.displayName;
+  return p.email || "";
+}
+
+function getUserId() {
+  let userId = null;
+  try {
+    if (window.__tt_userId) userId = window.__tt_userId;
+    if (!userId) userId = localStorage.getItem("tt_userId");
+    if (!userId && user?.value?.uid) userId = user.value.uid;
+    if (userId) localStorage.setItem("tt_userId", userId);
+  } catch {}
+  return userId;
+}
+
+function average(nums) {
+  const arr = (nums || [])
+    .map((n) => (n === null || n === undefined ? null : Number(n)))
+    .filter((n) => !isNaN(n));
+  if (!arr.length) return null;
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+async function loadTeamTrends(weeks = 8) {
+  const userId = getUserId();
+  if (!userId) return; // silent if not signed in
+
+  // Build the list of dates (one per week), oldest -> newest
+  const base = new Date(dateStr.value);
+  const dateList = Array.from({ length: weeks }, (_, idx) => {
+    const d = new Date(base);
+    d.setDate(d.getDate() - 7 * (weeks - 1 - idx));
+    return toLocalYMD(d);
+  });
+
+  try {
+    const results = await Promise.all(
+      dateList.map((d) =>
+        getTeamWeeklySummaries({ userId, date: d }).catch(() => null)
+      )
+    );
+
+    const labels = [];
+    const mileage = [];
+    const stress = [];
+    const sleep = [];
+    const rhr = [];
+    const exhr = [];
+    const rpe = [];
+
+    results.forEach((res, i) => {
+      const summaries = res?.summaries || [];
+      // Label: prefer server weekStart, else the request date
+      const weekStart = summaries[0]?.weekStart || dateList[i];
+      labels.push(formatDate(weekStart));
+
+      mileage.push(average(summaries.map((s) => s.mileageSoFar)));
+      stress.push(
+        average(
+          summaries.map(
+            (s) =>
+              s.averageStress?.averageActivityMetric ?? s.averageStress ?? null
+          )
+        )
+      );
+      sleep.push(
+        average(
+          summaries.map(
+            (s) =>
+              s.averageSleep?.averageActivityMetric ?? s.averageSleep ?? null
+          )
+        )
+      );
+      rhr.push(
+        average(
+          summaries.map(
+            (s) =>
+              s.averageRestingHeartRate?.averageActivityMetric ??
+              s.averageRestingHeartRate ??
+              null
+          )
+        )
+      );
+      exhr.push(
+        average(
+          summaries.map(
+            (s) =>
+              s.averageExerciseHeartRate?.averageActivityMetric ??
+              s.averageExerciseHeartRate ??
+              null
+          )
+        )
+      );
+      rpe.push(
+        average(
+          summaries.map(
+            (s) =>
+              s.averagePerceivedExertion?.averageActivityMetric ??
+              s.averagePerceivedExertion ??
+              null
+          )
+        )
+      );
+    });
+
+    const dsCommon = {
+      fill: false,
+      spanGaps: true,
+      tension: 0.25,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+      pointHitRadius: 8,
+    };
+
+    const datasets = [
+      {
+        label: "Avg Mileage",
+        data: mileage,
+        borderColor: "#750014",
+        backgroundColor: "#750014",
+        ...dsCommon,
+      },
+      {
+        label: "Avg Stress",
+        data: stress,
+        borderColor: "#f59e0b",
+        backgroundColor: "#f59e0b",
+        ...dsCommon,
+      },
+      {
+        label: "Avg Sleep (h)",
+        data: sleep,
+        borderColor: "#2563eb",
+        backgroundColor: "#2563eb",
+        ...dsCommon,
+      },
+      {
+        label: "Avg Rest HR",
+        data: rhr,
+        borderColor: "#7c3aed",
+        backgroundColor: "#7c3aed",
+        ...dsCommon,
+      },
+      {
+        label: "Avg Ex HR",
+        data: exhr,
+        borderColor: "#16a34a",
+        backgroundColor: "#16a34a",
+        ...dsCommon,
+      },
+      {
+        label: "Avg RPE",
+        data: rpe,
+        borderColor: "#6b7280",
+        backgroundColor: "#6b7280",
+        ...dsCommon,
+      },
+    ];
+
+    const cfg = {
+      type: "line",
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "nearest", intersect: false },
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: {
+            callbacks: {
+              label: (ctx) =>
+                `${ctx.dataset.label}: ${formatNumber(ctx.parsed.y)}`,
+            },
+          },
+        },
+        scales: {
+          x: { grid: { color: "#eee" } },
+          y: { grid: { color: "#eee" } },
+        },
+      },
+    };
+
+    // Create or update chart
+    if (chartInstance) {
+      chartInstance.data.labels = labels;
+      chartInstance.data.datasets = datasets;
+      chartInstance.update();
+    } else if (chartEl.value) {
+      chartInstance = new Chart(chartEl.value.getContext("2d"), cfg);
+    }
+  } catch (e) {
+    // Silent fail for chart; page still usable
+    // console.error(e);
+  }
+}
+
 async function refresh() {
   err.value = "";
   loading.value = true;
   try {
     // get backend userId from window/localStorage (set during login)
-    let userId = null;
-    try {
-      if (window.__tt_userId) userId = window.__tt_userId;
-      if (!userId) userId = localStorage.getItem("tt_userId");
-      // fallback to Firebase auth uid
-      if (!userId && user?.value?.uid) userId = user.value.uid;
-      if (userId) localStorage.setItem("tt_userId", userId);
-    } catch {}
+    const userId = getUserId();
     if (!userId) {
       err.value = "Please sign in to view team summaries.";
       return;
@@ -125,6 +332,8 @@ async function refresh() {
         averagePerceivedExertion: s.averagePerceivedExertion,
       }));
       cards.value = list;
+      // Update the chart for the current date window
+      await loadTeamTrends();
     }
   } catch (e) {
     err.value = e?.message || "Failed to load summaries";
@@ -133,7 +342,19 @@ async function refresh() {
   }
 }
 
-onMounted(refresh);
+onMounted(async () => {
+  await refresh();
+  await loadTeamTrends();
+});
+
+onUnmounted(() => {
+  if (chartInstance) {
+    try {
+      chartInstance.destroy();
+    } catch {}
+    chartInstance = null;
+  }
+});
 </script>
 
 <style scoped>
@@ -146,6 +367,9 @@ onMounted(refresh);
   align-items: center;
   justify-content: space-between;
   margin: 8px 0 16px;
+}
+.header h1 {
+  color: #ffffff;
 }
 .actions {
   display: flex;
@@ -174,6 +398,25 @@ onMounted(refresh);
   background: var(--accent-700);
 }
 
+.trend-card {
+  background: #fff;
+  border: 1px solid var(--gray-300);
+  border-radius: 12px;
+  padding: 14px;
+  margin: 8px 0 20px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.trend-title {
+  margin: 0 0 8px 0;
+  color: var(--color-heading);
+  font-weight: 800;
+}
+.trend-chart {
+  position: relative;
+  width: 100%;
+  height: 260px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -192,6 +435,7 @@ onMounted(refresh);
 .name {
   font-weight: 800;
   color: var(--color-heading);
+  font-size: 1.2rem;
 }
 .email {
   color: var(--vt-c-text-light-2);

@@ -58,7 +58,7 @@ nav {
   z-index: 1000;
   background: var(--color-accent);
   color: #fff;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: 1px solid #ffffff;
   backdrop-filter: saturate(180%) blur(8px);
   /* full-bleed background */
   width: 100vw;
@@ -70,8 +70,8 @@ nav {
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px;
-  max-width: 1280px;
-  margin: 0 auto;
+  max-width: none; /* full width */
+  margin: 0; /* no centering */
 }
 nav a {
   text-decoration: none;
@@ -101,7 +101,10 @@ nav a {
   font-size: 0.9rem;
 }
 .brand-text {
-  font-size: 1rem;
+  font-size: 1.9rem;
+  font-family: "Racing Sans One", cursive, sans-serif;
+  letter-spacing: 1px;
+  text-transform: uppercase;
 }
 .nav-right {
   display: flex;

@@ -396,9 +396,9 @@ async function onLeaveTeam() {
   margin: 0 auto;
 }
 .page-title {
-  font-size: 1.75rem;
+  font-size: 2.25rem;
   font-weight: 700;
-  color: var(--color-heading);
+  color: #ffffff;
   margin-bottom: 12px;
 }
 .grid {
