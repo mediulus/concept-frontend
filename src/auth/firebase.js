@@ -23,6 +23,7 @@ provider.setCustomParameters({ prompt: "select_account" });
 
 export function signInWithGoogle() {
   // Popup sign-in keeps it simple for this demo
+  console.log("inside signInWithGoogle");
   return signInWithPopup(auth, provider);
 }
 

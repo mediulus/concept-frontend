@@ -30,13 +30,10 @@ export function useAuth() {
     signOutUser,
     auth,
     async signInWithGoogleAndRegister() {
+      console.log("inside useAuth signInWithGoogleAndRegister");
       // 1) Firebase popup sign-in
       const cred = await signInWithGoogle();
-      // Prefer Google OIDC idToken from provider credential
-      const oauthCred = GoogleAuthProvider.credentialFromResult(cred);
-      const googleIdToken = oauthCred?.idToken;
-      const tokenToSend = googleIdToken || (await cred.user.getIdToken());
-
+      const tokenToSend = await cred.user.getIdToken();
       // 2) Call backend UserDirectory to upsert user using idToken
       const res = await loginWithGoogleIdToken(tokenToSend);
       if (res && !res.error && res.userId) {

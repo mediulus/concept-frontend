@@ -10,6 +10,9 @@ import NavBar from "./components/NavBar.vue";
 </template>
 
 <style scoped>
+main {
+  padding: 16px; /* overall page padding under sticky nav */
+}
 header {
   line-height: 1.5;
 }

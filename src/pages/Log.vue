@@ -1,48 +1,10 @@
 <template>
   <div class="log-page">
-    <h1>Training Log</h1>
-
-    <form class="grid" @submit.prevent="save">
-      <label>
-        Date
-        <input type="date" v-model="date" required />
-      </label>
-      <label>
-        Mileage
-        <input type="number" step="0.1" v-model.number="form.mileage" />
-      </label>
-      <label>
-        Stress (1-10)
-        <input type="number" min="1" max="10" v-model.number="form.stress" />
-      </label>
-      <label>
-        Sleep (hrs)
-        <input type="number" step="0.1" v-model.number="form.sleep" />
-      </label>
-      <label>
-        Resting HR
-        <input type="number" v-model.number="form.restingHeartRate" />
-      </label>
-      <label>
-        Exercise HR
-        <input type="number" v-model.number="form.exerciseHeartRate" />
-      </label>
-      <label>
-        Perceived Exertion (1-10)
-        <input
-          type="number"
-          min="1"
-          max="10"
-          v-model.number="form.perceivedExertion"
-        />
-      </label>
-      <label class="span2">
-        Notes
-        <textarea v-model="form.notes" rows="2"></textarea>
-      </label>
-      <div class="span2 actions">
-        <button type="submit" :disabled="!userId || saving">
-          {{ saving ? "Saving…" : "Save" }}
+    <div class="header">
+      <h1>Training Log</h1>
+      <div class="header-actions">
+        <button class="jump-today-btn" @click="jumpToToday">
+          Jump to Today
         </button>
         <span v-if="!userId" class="hint">
           Sign in to enable saving.
@@ -58,22 +20,106 @@
         <span v-if="err" class="err">{{ err }}</span>
         <span v-if="ok" class="ok">Saved</span>
       </div>
-    </form>
-    <section v-if="entries.length" class="chart-wrap">
-      <h2>Weekly Trends</h2>
-      <canvas ref="chartEl" height="160"></canvas>
-    </section>
+    </div>
+
+    <div class="spreadsheet-container">
+      <table class="training-table">
+        <thead>
+          <tr>
+            <th class="date-col">Date</th>
+            <th>Mileage</th>
+            <th>Stress (1-10)</th>
+            <th>Sleep (hrs)</th>
+            <th>Resting HR</th>
+            <th>Exercise HR</th>
+            <th>Perceived Exertion (1-10)</th>
+            <th class="notes-col">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="row in sortedRows"
+            :key="row.date"
+            :class="{ 'current-date': row.isToday }"
+          >
+            <td class="date-col">
+              {{ formatDate(row.date) }}
+            </td>
+            <td>
+              <input
+                type="number"
+                step="0.1"
+                v-model.number="row.mileage"
+                @blur="saveRow(row)"
+                :disabled="!userId"
+              />
+            </td>
+            <td>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                v-model.number="row.stress"
+                @blur="saveRow(row)"
+                :disabled="!userId"
+              />
+            </td>
+            <td>
+              <input
+                type="number"
+                step="0.1"
+                v-model.number="row.sleep"
+                @blur="saveRow(row)"
+                :disabled="!userId"
+              />
+            </td>
+            <td>
+              <input
+                type="number"
+                v-model.number="row.restingHeartRate"
+                @blur="saveRow(row)"
+                :disabled="!userId"
+              />
+            </td>
+            <td>
+              <input
+                type="number"
+                v-model.number="row.exerciseHeartRate"
+                @blur="saveRow(row)"
+                :disabled="!userId"
+              />
+            </td>
+            <td>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                v-model.number="row.perceivedExertion"
+                @blur="saveRow(row)"
+                :disabled="!userId"
+              />
+            </td>
+            <td class="notes-col">
+              <input
+                type="text"
+                v-model="row.notes"
+                @blur="saveRow(row)"
+                :disabled="!userId"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { onMounted, onBeforeUnmount, ref, watch } from "vue";
+import { onMounted, ref, watch, computed } from "vue";
 import { useAuth } from "../composables/useAuth";
 import { listEntries, logDailyEntry } from "../api/trainingRecords";
 import { loginWithGoogleIdToken } from "../api/userDirectory";
 import { GoogleAuthProvider, signInWithPopup } from "firebase/auth";
-import { Chart, registerables } from "chart.js";
-Chart.register(...registerables);
 
 const { user, auth } = useAuth();
 const userId = ref(null);
@@ -84,23 +130,95 @@ try {
   if (!userId.value && cached) userId.value = cached;
 } catch {}
 
-const date = ref(new Date().toISOString().slice(0, 10));
-const form = ref({
-  mileage: null,
-  stress: null,
-  sleep: null,
-  restingHeartRate: null,
-  exerciseHeartRate: null,
-  perceivedExertion: null,
-  notes: "",
-});
 const saving = ref(false);
 const err = ref(null);
 const ok = ref(false);
 const entries = ref([]);
 
-const chartEl = ref(null);
-let chart;
+// Local date helpers to avoid UTC shifting
+function toLocalYMD(d) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseLocalYMD(s) {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+// Generate rows for the past 30 days and next 7 days
+const sortedRows = computed(() => {
+  const today = new Date();
+  const todayStr = toLocalYMD(today);
+  const rows = [];
+
+  // Generate date range: 30 days in the past to 7 days in the future
+  for (let i = -30; i <= 7; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    const dateStr = toLocalYMD(d);
+
+    // Find existing entry for this date
+    const existing = entries.value.find((e) => e.day === dateStr);
+
+    rows.push({
+      date: dateStr,
+      isToday: dateStr === todayStr,
+      mileage: existing?.mileage ?? null,
+      stress: existing?.stress ?? null,
+      sleep: existing?.sleep ?? null,
+      restingHeartRate: existing?.restingHeartRate ?? null,
+      exerciseHeartRate: existing?.exerciseHeartRate ?? null,
+      perceivedExertion: existing?.perceivedExertion ?? null,
+      notes: existing?.notes ?? "",
+    });
+  }
+
+  return rows;
+});
+
+function formatDate(dateStr) {
+  const date = parseLocalYMD(dateStr);
+  const todayStr = toLocalYMD(new Date());
+
+  const monthNames = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  const month = monthNames[date.getMonth()];
+  const day = date.getDate();
+  const year = date.getFullYear();
+
+  const formattedDate = `${month} ${day}, ${year}`;
+
+  if (dateStr === todayStr) {
+    return `${formattedDate} (Today)`;
+  }
+
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const dayName = dayNames[date.getDay()];
+
+  return `${formattedDate} (${dayName})`;
+}
+
+function jumpToToday() {
+  const todayRow = document.querySelector(".current-date");
+  if (todayRow) {
+    todayRow.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
 
 async function ensureBackendUser() {
   try {
@@ -130,31 +248,40 @@ async function load() {
     return;
   }
   entries.value = res.entries || [];
-  draw();
 }
 
-async function save() {
+async function saveRow(row) {
+  if (!userId.value) return;
+
   err.value = null;
   ok.value = false;
   saving.value = true;
+
   try {
-    if (!userId.value) {
-      err.value = "Sign in to save.";
-      return;
-    }
-    const payload = { userId: userId.value, date: date.value, ...form.value };
+    const payload = {
+      userId: userId.value,
+      date: row.date,
+      mileage: row.mileage,
+      stress: row.stress,
+      sleep: row.sleep,
+      restingHeartRate: row.restingHeartRate,
+      exerciseHeartRate: row.exerciseHeartRate,
+      perceivedExertion: row.perceivedExertion,
+      notes: row.notes,
+    };
+
     const res = await logDailyEntry(payload);
     if (res?.error) {
       err.value = res.error;
     } else {
       ok.value = true;
       await load();
+      setTimeout(() => (ok.value = false), 1200);
     }
   } catch (e) {
     err.value = e?.response?.data?.error || e?.message || "Failed to save";
   } finally {
     saving.value = false;
-    setTimeout(() => (ok.value = false), 1200);
   }
 }
 
@@ -189,75 +316,6 @@ async function linkBackendAccount() {
   }
 }
 
-function draw() {
-  if (!chartEl.value) return;
-  const labels = entries.value.map((e) => new Date(e.day).toLocaleDateString());
-  const makeData = (key) =>
-    entries.value.map((e) => (typeof e[key] === "number" ? e[key] : null));
-  const ds = (label, key, color) => ({
-    label,
-    data: makeData(key),
-    borderColor: color,
-    backgroundColor: color,
-    pointBackgroundColor: color,
-    pointBorderColor: color,
-    pointHoverBackgroundColor: color,
-    pointHoverBorderColor: color,
-    pointRadius: 3,
-    pointHoverRadius: 4,
-    borderWidth: 2,
-    tension: 0,
-    spanGaps: true,
-    fill: false,
-  });
-  const data = {
-    labels,
-    datasets: [
-      ds("Mileage", "mileage", "#ef4444"),
-      ds("Stress", "stress", "#dc2626"),
-      ds("Sleep", "sleep", "#f87171"),
-      ds("Resting HR", "restingHeartRate", "#b91c1c"),
-      ds("Exercise HR", "exerciseHeartRate", "#fb7185"),
-      ds("Perceived Exertion", "perceivedExertion", "#991b1b"),
-    ],
-  };
-  const options = {
-    responsive: true,
-    plugins: {
-      legend: {
-        position: "bottom",
-        labels: { color: "#374151" },
-      },
-      tooltip: {
-        titleColor: "#111827",
-        bodyColor: "#111827",
-        backgroundColor: "#fff",
-        borderColor: "#e5e7eb",
-        borderWidth: 1,
-      },
-    },
-    scales: {
-      x: {
-        ticks: { color: "#111827" },
-        grid: { color: "#e5e7eb" },
-        border: { color: "#9ca3af" },
-      },
-      y: {
-        beginAtZero: true,
-        ticks: { color: "#111827" },
-        grid: { color: "#e5e7eb" },
-        border: { color: "#9ca3af" },
-      },
-    },
-  };
-  if (chart) chart.destroy();
-  chart = new Chart(chartEl.value.getContext("2d"), {
-    type: "line",
-    data,
-    options,
-  });
-}
-
 watch(user, async (val) => {
   // If we later store backend userId on window after sign-in, pick it up
   try {
@@ -274,63 +332,230 @@ watch(user, async (val) => {
 onMounted(async () => {
   await ensureBackendUser();
   await load();
-});
-onBeforeUnmount(() => {
-  if (chart) chart.destroy();
+
+  // Scroll to today's row after the component is mounted
+  setTimeout(() => {
+    const todayRow = document.querySelector(".current-date");
+    if (todayRow) {
+      todayRow.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, 100);
 });
 </script>
 
 <style scoped>
 .log-page {
-  max-width: 900px;
+  max-width: 100%;
   margin: 0 auto;
-  padding: 16px;
+  padding: 20px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f8f9fa;
 }
-.grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 0 4px;
 }
-.span2 {
-  grid-column: span 2;
+
+.header h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: #1a1a1a;
 }
-.actions {
+
+.header-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
 }
+
+.jump-today-btn {
+  background: var(--color-accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.jump-today-btn:hover {
+  background: var(--accent-700);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+}
+
+.jump-today-btn:active {
+  transform: scale(0.98);
+}
+
+.spreadsheet-container {
+  flex: 1;
+  overflow: auto;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  background: white;
+  border: 1px solid #e5e7eb;
+}
+
+.training-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+}
+
+.training-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.training-table th {
+  padding: 12px 8px;
+  font-weight: 600;
+  text-align: center;
+  border-bottom: 2px solid var(--gray-300);
+  border-right: 1px solid var(--gray-200);
+  background: var(--gray-100);
+  color: var(--gray-600);
+  white-space: nowrap;
+  user-select: none;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.training-table th:last-child {
+  border-right: none;
+}
+
+.training-table td {
+  padding: 0;
+  border-bottom: 1px solid #f3f4f6;
+  border-right: 1px solid #f9fafb;
+  background: white;
+  height: 42px;
+  transition: background-color 0.15s ease;
+}
+
+.training-table td:last-child {
+  border-right: none;
+}
+
+.training-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.training-table tr:hover td {
+  background: #f9fafb;
+}
+
+.training-table tr.current-date td {
+  background: var(--accent-100);
+  border-color: var(--color-accent);
+}
+
+.training-table tr.current-date:hover td {
+  background: var(--accent-200);
+}
+
+.training-table input {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: inherit;
+  box-sizing: border-box;
+  outline: none;
+  color: #1f2937;
+  transition: all 0.15s ease;
+}
+
+.training-table input:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+  background: white;
+  z-index: 1;
+  position: relative;
+  box-shadow: 0 0 0 3px rgba(117, 0, 20, 0.12);
+}
+
+.training-table input:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.training-table input[type="number"] {
+  text-align: right;
+}
+
+.date-col {
+  width: 180px;
+  min-width: 180px;
+  font-weight: 500;
+  padding: 8px 12px !important;
+  text-align: left !important;
+  background: var(--gray-100) !important;
+  color: var(--color-text) !important;
+}
+
+.training-table tr:hover .date-col {
+  background: var(--gray-200) !important;
+}
+
+.training-table tr.current-date .date-col {
+  background: var(--accent-100) !important;
+  font-weight: 600;
+}
+
+.notes-col {
+  min-width: 250px;
+}
+
 .err {
-  color: crimson;
+  color: var(--color-accent);
+  font-size: 0.875rem;
+  font-weight: 500;
 }
+
 .ok {
-  color: seagreen;
+  color: #059669;
+  font-size: 0.875rem;
+  font-weight: 500;
 }
-.chart-wrap {
-  margin-top: 24px;
-}
-label {
-  display: grid;
-  gap: 6px;
-  font-size: 0.9rem;
-}
-input,
-textarea {
-  padding: 6px 8px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-}
-button {
-  padding: 6px 12px;
-}
+
 .link-btn {
   background: transparent;
   border: none;
-  color: #dc2626;
+  color: var(--color-accent);
   padding: 0 4px;
   cursor: pointer;
   text-decoration: underline;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: color 0.15s ease;
 }
+
+.link-btn:hover {
+  color: var(--accent-700);
+}
+
 .hint {
   color: #6b7280;
+  font-size: 0.875rem;
 }
 </style>
