@@ -7,8 +7,11 @@ import {
 } from "../api/events";
 import { sendNotificationToTeam } from "../api/notifications";
 import { useAuth } from "../composables/useAuth";
+import { getTeamByCoach, getTeamByAthlete } from "../api/teamMembership";
 
 const { user } = useAuth();
+const teamId = ref(null);
+const hasTeam = computed(() => !!teamId.value);
 
 // today reference
 const today = new Date();
@@ -196,6 +199,10 @@ function closeEvent() {
 
 async function onSelectDay(day) {
   if (day == null) return;
+  if (!hasTeam.value) {
+    eventsError.value = "Join a team to view calendar events.";
+    return;
+  }
   selectedDay.value = day;
   eventsLoading.value = true;
   eventsError.value = "";
@@ -203,6 +210,7 @@ async function onSelectDay(day) {
   // leave other days cached
   try {
     const res = await getEventsByDate({
+      teamId: teamId.value,
       day,
       month: currentMonth.value + 1, // convert 0-11 -> 1-12
       year: currentYear.value,
@@ -288,6 +296,10 @@ async function submitCreateLocal() {
   formError.value = "";
   formOk.value = "";
   try {
+    if (!hasTeam.value) {
+      formError.value = "You must join or create a team to create events.";
+      return;
+    }
     if (!form.title.trim()) return (formError.value = "Title is required.");
     if (!form.location.trim())
       return (formError.value = "Location is required.");
@@ -304,6 +316,7 @@ async function submitCreateLocal() {
     }
 
     const payload = {
+      teamId: teamId.value,
       startTime,
       endTime,
       location: form.location.trim(),
@@ -418,6 +431,11 @@ async function sendNotification() {
 async function loadMonthEvents() {
   eventsLoading.value = true;
   eventsError.value = "";
+  if (!hasTeam.value) {
+    eventsByDay.value = {};
+    eventsLoading.value = false;
+    return;
+  }
   const year = currentYear.value;
   const month = currentMonth.value;
   const total = daysInMonth(year, month);
@@ -430,6 +448,7 @@ async function loadMonthEvents() {
   for (let day = 1; day <= total; day++) {
     promises.push(
       getEventsByDate({
+        teamId: teamId.value,
         day,
         month: month + 1, // convert 0-11 -> 1-12
         year,
@@ -457,8 +476,32 @@ async function loadMonthEvents() {
 }
 
 // Auto-select today on mount to trigger the first fetch
-onMounted(() => {
-  loadMonthEvents();
+onMounted(async () => {
+  // Determine teamId for current user (coach preferred else athlete)
+  try {
+    let uid = null;
+    try {
+      if (window.__tt_userId) uid = window.__tt_userId;
+      else uid = localStorage.getItem("tt_userId");
+    } catch {}
+
+    if (uid) {
+      // Try coach first
+      const coachRes = await getTeamByCoach(uid);
+      if (coachRes && !coachRes.error && coachRes._id) {
+        teamId.value = coachRes._id;
+      } else {
+        const athRes = await getTeamByAthlete(uid);
+        if (athRes && !athRes.error && athRes._id) {
+          teamId.value = athRes._id;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to resolve teamId:", e?.message || e);
+  }
+
+  await loadMonthEvents();
 });
 
 // Watch for month/year changes and reload events

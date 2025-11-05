@@ -1,12 +1,21 @@
 <script setup>
 import NavBar from "./components/NavBar.vue";
+import AuthGate from "./components/AuthGate.vue";
+import { useAuth } from "./composables/useAuth";
+
+const { user } = useAuth();
 </script>
 
 <template>
-  <NavBar />
-  <main>
-    <router-view />
-  </main>
+  <template v-if="user">
+    <NavBar />
+    <main>
+      <router-view />
+    </main>
+  </template>
+  <template v-else>
+    <AuthGate />
+  </template>
 </template>
 
 <style scoped>
