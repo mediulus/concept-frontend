@@ -7,11 +7,16 @@ import {
 } from "../api/events";
 import { sendNotificationToTeam } from "../api/notifications";
 import { useAuth } from "../composables/useAuth";
+import { useToast } from "../composables/useToast";
 import { getTeamByCoach, getTeamByAthlete } from "../api/teamMembership";
+import { getUser } from "../api/userDirectory";
 
 const { user } = useAuth();
+const toast = useToast();
 const teamId = ref(null);
 const hasTeam = computed(() => !!teamId.value);
+const userRole = ref(null); // 'coach' or 'athlete'
+const isCoach = computed(() => userRole.value === "coach");
 
 // today reference
 const today = new Date();
@@ -154,20 +159,49 @@ async function saveEdit() {
   if (editForm.endAt) updates.endTime = new Date(editForm.endAt).toISOString();
 
   try {
+    // Get user ID from localStorage/window
+    let userId = null;
+    try {
+      if (window.__tt_userId) userId = window.__tt_userId;
+      else userId = localStorage.getItem("tt_userId");
+    } catch {}
+
+    if (!userId) {
+      toast.error("User ID not found. Please sign in.");
+      return;
+    }
+
     const res = await apiEditEvent({
       eventId: selectedEvent.value._id,
       updates,
+      coachId: userId,
     });
     if (res?.error) {
-      alert(res.error);
+      toast.error(res.error);
       return;
     }
-    // Refresh month events and re-open the edited event
+
+    // Save the event ID before refreshing
+    const editedEventId = selectedEvent.value._id;
+
+    // Refresh month events to get updated data
     await loadMonthEvents();
-    // Find the same day and set selectedEvent from fresh data if possible
+
+    // Find and update the selectedEvent with fresh data
+    const eventDay = new Date(selectedEvent.value.startTime).getDate();
+    const dayEvents = eventsByDay.value[eventDay];
+    if (dayEvents) {
+      const updatedEvent = dayEvents.find((e) => e._id === editedEventId);
+      if (updatedEvent) {
+        selectedEvent.value = updatedEvent;
+      }
+    }
+
     editingEvent.value = false;
   } catch (e) {
-    alert(e?.response?.data?.error || e?.message || "Failed to save changes.");
+    toast.error(
+      e?.response?.data?.error || e?.message || "Failed to save changes."
+    );
   }
 }
 
@@ -175,15 +209,32 @@ async function confirmDelete() {
   if (!selectedEvent.value) return;
   if (!confirm("Delete this event? This cannot be undone.")) return;
   try {
-    const res = await apiDeleteEvent({ eventId: selectedEvent.value._id });
+    // Get user ID from localStorage/window
+    let userId = null;
+    try {
+      if (window.__tt_userId) userId = window.__tt_userId;
+      else userId = localStorage.getItem("tt_userId");
+    } catch {}
+
+    if (!userId) {
+      toast.error("User ID not found. Please sign in.");
+      return;
+    }
+
+    const res = await apiDeleteEvent({
+      eventId: selectedEvent.value._id,
+      coachId: userId,
+    });
     if (res?.error) {
-      alert(res.error);
+      toast.error(res.error);
       return;
     }
     await loadMonthEvents();
     closeEvent();
   } catch (e) {
-    alert(e?.response?.data?.error || e?.message || "Failed to delete event.");
+    toast.error(
+      e?.response?.data?.error || e?.message || "Failed to delete event."
+    );
   }
 }
 
@@ -315,6 +366,18 @@ async function submitCreateLocal() {
       return (formError.value = "Start time must be before end time.");
     }
 
+    // Get user ID from localStorage/window
+    let userId = null;
+    try {
+      if (window.__tt_userId) userId = window.__tt_userId;
+      else userId = localStorage.getItem("tt_userId");
+    } catch {}
+
+    if (!userId) {
+      formError.value = "User ID not found. Please sign in.";
+      return;
+    }
+
     const payload = {
       teamId: teamId.value,
       startTime,
@@ -323,6 +386,7 @@ async function submitCreateLocal() {
       title: form.title.trim(),
       description: form.description?.trim() || undefined,
       link: form.link?.trim() || undefined,
+      coachId: userId,
     };
 
     try {
@@ -330,16 +394,23 @@ async function submitCreateLocal() {
       if (res?.error) {
         formError.value = res.error;
       } else {
-        formOk.value = "Event created (server responded).";
-        // Optionally close/reset here
-        // showCreate.value = false;
+        formOk.value = "Event created!";
+        // Refresh the calendar to show the new event
+        await loadMonthEvents();
+        // Close the create form after a brief delay
+        setTimeout(() => {
+          showCreate.value = false;
+          formOk.value = "";
+          formError.value = "";
+        }, 1000);
       }
     } catch (e) {
       console.warn(
-        "Create Event API not available yet:",
+        "Create Event API error:",
         (e && (e.response?.data || e.message)) || e
       );
-      formOk.value = "Request prepared. Backend endpoint not ready yet.";
+      formError.value =
+        e?.response?.data?.error || e?.message || "Failed to create event.";
     }
   } catch (e) {
     formError.value = e?.message || "Validation failed.";
@@ -486,6 +557,16 @@ onMounted(async () => {
     } catch {}
 
     if (uid) {
+      // Fetch user role
+      try {
+        const userProfile = await getUser(uid);
+        if (userProfile && !userProfile.error) {
+          userRole.value = userProfile.role;
+        }
+      } catch (e) {
+        console.warn("Failed to fetch user role:", e?.message || e);
+      }
+
       // Try coach first
       const coachRes = await getTeamByCoach(uid);
       if (coachRes && !coachRes.error && coachRes._id) {
@@ -508,6 +589,63 @@ onMounted(async () => {
 watch([currentYear, currentMonth], () => {
   loadMonthEvents();
 });
+
+// Watch for team changes and reload events
+watch(teamId, () => {
+  if (teamId.value) {
+    loadMonthEvents();
+  }
+});
+
+// Watch for user changes (sign in/out) and reload everything
+watch(user, async (newUser, oldUser) => {
+  // Clear data when signing out
+  if (!newUser && oldUser) {
+    teamId.value = null;
+    userRole.value = null;
+    eventsByDay.value = {};
+    selectedEvent.value = null;
+    return;
+  }
+
+  // Reload data when signing in
+  if (newUser) {
+    try {
+      let uid = null;
+      try {
+        if (window.__tt_userId) uid = window.__tt_userId;
+        else uid = localStorage.getItem("tt_userId");
+      } catch {}
+
+      if (uid) {
+        // Fetch user role
+        try {
+          const userProfile = await getUser(uid);
+          if (userProfile && !userProfile.error) {
+            userRole.value = userProfile.role;
+          }
+        } catch (e) {
+          console.warn("Failed to fetch user role:", e?.message || e);
+        }
+
+        // Try coach first
+        const coachRes = await getTeamByCoach(uid);
+        if (coachRes && !coachRes.error && coachRes._id) {
+          teamId.value = coachRes._id;
+        } else {
+          const athRes = await getTeamByAthlete(uid);
+          if (athRes && !athRes.error && athRes._id) {
+            teamId.value = athRes._id;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to reload user data:", e?.message || e);
+    }
+
+    await loadMonthEvents();
+  }
+});
 </script>
 
 <template>
@@ -520,7 +658,7 @@ watch([currentYear, currentMonth], () => {
       <button type="button" class="nav-btn" @click="nextMonth">→</button>
     </div>
 
-    <div class="create-bar">
+    <div class="create-bar" v-if="isCoach">
       <button
         type="button"
         class="btn btn-notification"
@@ -839,7 +977,7 @@ watch([currentYear, currentMonth], () => {
             </div>
           </template>
         </div>
-        <div class="modal-actions" style="gap: 8px">
+        <div class="modal-actions" style="gap: 8px" v-if="isCoach">
           <button
             v-if="!editingEvent"
             type="button"

@@ -28,6 +28,12 @@ export function signInWithGoogle() {
 }
 
 export function signOutUser() {
+  // Clear stored user ID
+  try {
+    delete window.__tt_userId;
+    localStorage.removeItem("tt_userId");
+  } catch {}
+
   return signOut(auth);
 }
 

@@ -316,17 +316,26 @@ async function linkBackendAccount() {
   }
 }
 
-watch(user, async (val) => {
+watch(user, async (newUser, oldUser) => {
+  // Clear data when signing out
+  if (!newUser && oldUser) {
+    userId.value = null;
+    records.value = [];
+    return;
+  }
+
   // If we later store backend userId on window after sign-in, pick it up
-  try {
-    if (window.__tt_userId) userId.value = window.__tt_userId;
-    if (!userId.value) {
-      const cached = localStorage.getItem("tt_userId");
-      if (cached) userId.value = cached;
-    }
-  } catch {}
-  await ensureBackendUser();
-  await load();
+  if (newUser) {
+    try {
+      if (window.__tt_userId) userId.value = window.__tt_userId;
+      if (!userId.value) {
+        const cached = localStorage.getItem("tt_userId");
+        if (cached) userId.value = cached;
+      }
+    } catch {}
+    await ensureBackendUser();
+    await load();
+  }
 });
 
 onMounted(async () => {

@@ -6,9 +6,12 @@ export async function logDailyEntry(payload) {
   return data;
 }
 
+// Converted to POST (was GET with params)
 export async function listEntries({ userId, from, to }) {
-  const { data } = await api.get("/TrainingRecords/listEntries", {
-    params: { userId, from, to },
+  const { data } = await api.post("/TrainingRecords/listEntries", {
+    userId,
+    from,
+    to,
   });
   const raw = data?.entries ?? data ?? [];
   const entries = (Array.isArray(raw) ? raw : [])
@@ -36,9 +39,11 @@ export async function listEntries({ userId, from, to }) {
   return { entries };
 }
 
+// Converted to POST
 export async function getTeamWeeklySummaries({ userId, date }) {
-  const { data } = await api.get("/TrainingRecords/getTeamWeeklySummaries", {
-    params: { userId, date },
+  const { data } = await api.post("/TrainingRecords/getTeamWeeklySummaries", {
+    userId,
+    date,
   });
   return data;
 }

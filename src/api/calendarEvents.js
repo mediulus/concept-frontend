@@ -10,6 +10,7 @@ export async function createEvent({
   title,
   description,
   link,
+  coachId,
 }) {
   const toIso = (v) => (v instanceof Date ? v : new Date(v)).toISOString();
   const payload = {
@@ -18,6 +19,7 @@ export async function createEvent({
     location,
     startTime: toIso(startTime),
     endTime: toIso(endTime),
+    coachId,
   };
   if (description != null && description !== "")
     payload.description = description;
@@ -27,15 +29,17 @@ export async function createEvent({
   return data; // expected: { event } | { error }
 }
 
-// Fetch all events for a given day (month is 1-12)
+// Converted to POST (was GET with query params)
 export async function getEventsByDate({ teamId, day, month, year }) {
   console.log("API getEventsByDate called with:", { day, month, year });
-  const { data } = await api.get("/CalanderEvent/getEventsByDate", {
-    params: { teamId, day, month, year },
+  const { data } = await api.post("/CalanderEvent/getEventsByDate", {
+    teamId,
+    day,
+    month,
+    year,
   });
   if (!data || data.error) return data;
   const events = Array.isArray(data.events) ? data.events : [];
-  // Normalize times to Date objects in the client
   const norm = events.map((e) => ({
     ...e,
     startTime: new Date(e.startTime),

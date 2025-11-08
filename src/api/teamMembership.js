@@ -12,9 +12,9 @@ export async function createTeam(coachId, title, passKey) {
 
 // Athlete joins a team by title + passKey
 export async function joinTeam(athleteId, title, passKey) {
-  const { data } = await api.post("/TeamMembership/joinTeam", {
-    athleteId,
+  const { data } = await api.post("/TeamMembership/addAthlete", {
     title,
+    athleteId,
     passKey,
   });
   return data; // {} | { error }
@@ -22,31 +22,44 @@ export async function joinTeam(athleteId, title, passKey) {
 
 // Athlete leaves a team by title
 export async function leaveTeam(athleteId, title) {
-  const { data } = await api.post("/TeamMembership/leaveTeam", {
-    athleteId,
+  const { data } = await api.post("/TeamMembership/removeAthlete", {
     title,
+    athleteId,
   });
   return data; // {} | { error }
 }
 
-// Query helpers
+// Converted to POST
 export async function getTeamByCoach(coachId) {
-  const { data } = await api.get("/TeamMembership/getTeamByCoach", {
-    params: { coachId },
+  console.log("inside get team by coach");
+  const { data } = await api.post("/TeamMembership/getTeamByCoach", {
+    coachId,
   });
   return data; // Team | { error }
 }
 
+// Converted to POST
 export async function getTeamByAthlete(athleteId) {
-  const { data } = await api.get("/TeamMembership/getTeamByAthlete", {
-    params: { athleteId },
+  console.log("inside get team by athlete");
+  const { data } = await api.post("/TeamMembership/getTeamByAthlete", {
+    athleteId,
   });
   return data; // Team | { error }
 }
 
+// Converted to POST
 export async function getAthletesByTeam(teamId) {
-  const { data } = await api.get("/TeamMembership/getAthletesByTeam", {
-    params: { teamId },
+  const { data } = await api.post("/TeamMembership/getAthletesByTeam", {
+    teamId,
   });
   return data; // User[] | { error }
+}
+
+// Coach disbands a team they own
+export async function deleteTeam(coachId, title) {
+  const { data } = await api.post("/TeamMembership/deleteTeam", {
+    coachId,
+    title,
+  });
+  return data; // {} | { error }
 }

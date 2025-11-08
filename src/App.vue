@@ -1,12 +1,14 @@
 <script setup>
 import NavBar from "./components/NavBar.vue";
 import AuthGate from "./components/AuthGate.vue";
+import ToastNotifications from "./components/ToastNotifications.vue";
 import { useAuth } from "./composables/useAuth";
 
 const { user } = useAuth();
 </script>
 
 <template>
+  <ToastNotifications />
   <template v-if="user">
     <NavBar />
     <main>

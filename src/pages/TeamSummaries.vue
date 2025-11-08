@@ -52,24 +52,26 @@
     </div>
 
     <!-- Read-only training log modal -->
-    <div v-if="logModal.open" class="modal-overlay" @click.self="closeLog">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3 class="modal-title">{{ personName(logModal.athlete) }}</h3>
-          <button class="btn-secondary" @click="closeLog">Close</button>
+    <Teleport to="body">
+      <div v-if="logModal.open" class="modal-overlay" @click.self="closeLog">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h3 class="modal-title">{{ personName(logModal.athlete) }}</h3>
+            <button class="btn-secondary" @click="closeLog">Close</button>
+          </div>
+          <ReadOnlyTrainingLog
+            v-if="logModal.userId"
+            :user-id="logModal.userId"
+          />
+          <div v-else class="err">No user ID for this athlete.</div>
         </div>
-        <ReadOnlyTrainingLog
-          v-if="logModal.userId"
-          :user-id="logModal.userId"
-        />
-        <div v-else class="err">No user ID for this athlete.</div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useAuth } from "../composables/useAuth";
 import { getTeamWeeklySummaries } from "../api/trainingRecords";
 import Chart from "chart.js/auto";
@@ -126,7 +128,7 @@ function personName(p) {
   if (p.name) return p.name;
   if (p.fullName) return p.fullName;
   if (p.displayName) return p.displayName;
-  return p.email || "";
+  return p.email || p.username || p.handle || "Unknown";
 }
 
 function getUserId() {
@@ -358,6 +360,26 @@ async function refresh() {
   }
 }
 
+watch(user, async (newUser, oldUser) => {
+  // Clear data when signing out
+  if (!newUser && oldUser) {
+    cards.value = [];
+    if (chartInstance) {
+      try {
+        chartInstance.destroy();
+      } catch {}
+      chartInstance = null;
+    }
+    return;
+  }
+
+  // Reload data when signing in
+  if (newUser) {
+    await refresh();
+    await loadTeamTrends();
+  }
+});
+
 onMounted(async () => {
   await refresh();
   await loadTeamTrends();
@@ -544,7 +566,7 @@ function closeLog() {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  z-index: 50;
+  z-index: 1000;
 }
 .modal-card {
   width: min(100%, 1000px);

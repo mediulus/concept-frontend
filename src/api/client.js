@@ -3,11 +3,9 @@ import { auth } from "../auth/firebase";
 
 // Create a configured axios instance
 // Note: Backend registers routes under `/api/...` by default; include it here.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 const api = axios.create({
-  baseURL:
-    import.meta.env.VITE_API_BASE ||
-    import.meta.env.VITE_API_BASE_URL ||
-    "http://localhost:8000/api",
+  baseURL: API_BASE,
   timeout: 20000,
   headers: { "Content-Type": "application/json" },
   // Set to true only if your backend uses cookies/sessions and CORS is configured for credentials

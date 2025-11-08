@@ -1,6 +1,7 @@
 <script setup>
 import { reactive, ref, onMounted, watch } from "vue";
 import { useAuth } from "../composables/useAuth";
+import { useToast } from "../composables/useToast";
 import {
   editUserMileage,
   editUserRole,
@@ -11,9 +12,13 @@ import {
   createTeam,
   joinTeam,
   getTeamByAthlete,
+  getTeamByCoach,
   leaveTeam,
+  deleteTeam,
 } from "../api/teamMembership";
 const { user } = useAuth();
+console.log("[Profile] Initial user value:", user.value);
+const toast = useToast();
 const backendProfile = ref(null);
 const teamInfo = ref(null);
 
@@ -21,12 +26,16 @@ const teamInfo = ref(null);
 const editing = reactive({ mileage: false, role: false, gender: false });
 const drafts = reactive({ mileage: null, role: null, gender: null });
 
-// Backend user id saved after login (see login flow)
-const backendUserId = ref(
-  (typeof localStorage !== "undefined" && localStorage.getItem("tt_userId")) ||
-    (typeof window !== "undefined" && window.__tt_userId) ||
-    null
-);
+// Backend user id - will be set by onMounted or user watcher
+const backendUserId = ref(null);
+
+// Modal state
+const showJoinModal = ref(false);
+const showCreateModal = ref(false);
+const showLeaveModal = ref(false);
+const showDisbandModal = ref(false);
+const joinForm = reactive({ title: "", passKey: "" });
+const createForm = reactive({ title: "", passKey: "" });
 
 function openMileageEditor() {
   if (backendProfile.value?.role !== "athlete") {
@@ -67,12 +76,22 @@ async function saveRoleLocal() {
   try {
     const res = await editUserRole(backendUserId.value, drafts.role);
     console.log("[Profile] Saved role response:", res);
+
+    // Check for error response from backend
+    if (res?.error) {
+      toast.error(res.error);
+      return;
+    }
+
     // refresh backend profile
     const u = await getUser(backendUserId.value);
     if (!u.error) backendProfile.value = u;
     editing.role = false;
   } catch (e) {
     console.error("[Profile] Failed to save role:", e);
+    toast.error(
+      e?.response?.data?.error || e?.message || "Failed to save role."
+    );
   }
 }
 
@@ -104,9 +123,19 @@ function saveGenderLocal() {
 
 async function loadBackendProfile() {
   try {
-    if (!backendUserId.value) return;
+    if (!backendUserId.value) {
+      console.log("[Profile] loadBackendProfile: no backendUserId");
+      return;
+    }
+    console.log("[Profile] Loading profile for userId:", backendUserId.value);
     const u = await getUser(backendUserId.value);
-    if (!u?.error) backendProfile.value = u;
+    console.log("[Profile] getUser response:", u);
+    if (!u?.error) {
+      backendProfile.value = u;
+      console.log("[Profile] backendProfile set to:", backendProfile.value);
+    } else {
+      console.warn("[Profile] getUser returned error:", u?.error);
+    }
   } catch (e) {
     console.warn("[Profile] Failed to load backend profile:", e);
   }
@@ -125,31 +154,67 @@ onMounted(async () => {
     } catch {}
   }
   await loadBackendProfile();
-  await loadTeamForAthlete();
+  await loadTeam();
 });
 
 watch(backendUserId, async (val) => {
+  console.log("[Profile] backendUserId watcher triggered with:", val);
   if (val) {
     await loadBackendProfile();
-    await loadTeamForAthlete();
+    await loadTeam();
   }
 });
 
-watch(user, async () => {
-  // If user signs in later, pick up backend id and load profile
-  if (!backendUserId.value) {
-    try {
-      if (typeof window !== "undefined" && window.__tt_userId) {
-        backendUserId.value = window.__tt_userId;
-      } else if (typeof localStorage !== "undefined") {
-        const cached = localStorage.getItem("tt_userId");
-        if (cached) backendUserId.value = cached;
+watch(
+  user,
+  async (newUser, oldUser) => {
+    console.log(
+      "[Profile] user watcher triggered. newUser:",
+      !!newUser,
+      "oldUser:",
+      !!oldUser
+    );
+
+    // Clear data when signing out
+    if (!newUser && oldUser) {
+      console.log("[Profile] Clearing data on sign out");
+      backendUserId.value = null;
+      backendProfile.value = null;
+      teamInfo.value = null;
+      return;
+    }
+
+    // If user signs in, pick up backend id (the backendUserId watcher will load the data)
+    if (newUser) {
+      console.log("[Profile] User signed in, looking for backend userId...");
+      // Retry a few times to wait for signInWithGoogleAndRegister to complete
+      for (let i = 0; i < 20; i++) {
+        try {
+          let uid = null;
+          if (typeof window !== "undefined" && window.__tt_userId) {
+            uid = window.__tt_userId;
+          } else if (typeof localStorage !== "undefined") {
+            uid = localStorage.getItem("tt_userId");
+          }
+
+          if (uid) {
+            console.log("[Profile] Found backend userId:", uid);
+            backendUserId.value = uid;
+            return;
+          }
+        } catch {}
+
+        console.log(
+          `[Profile] Retry ${i + 1}/20 - backend userId not found yet`
+        );
+        // Wait 100ms before trying again (increased from 50ms)
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
-    } catch {}
-  }
-  await loadBackendProfile();
-  await loadTeamForAthlete();
-});
+      console.warn("[Profile] Failed to find backend userId after 20 retries");
+    }
+  },
+  { flush: "post" }
+);
 
 async function loadTeamForAthlete() {
   try {
@@ -165,81 +230,147 @@ async function loadTeamForAthlete() {
   }
 }
 
-function openJoinTeam() {
-  (async () => {
+async function loadTeamForCoach() {
+  try {
     if (!backendUserId.value) return;
-    if (backendProfile.value?.role !== "athlete") {
-      console.warn("Only athletes can join teams.");
+    if (backendProfile.value?.role !== "coach") {
+      teamInfo.value = null;
       return;
     }
-    const title = window.prompt("Team title?")?.trim();
-    if (!title) return;
-    const passKey = window.prompt("Team passKey?")?.trim();
-    if (!passKey) return;
-    try {
-      const res = await joinTeam(backendUserId.value, title, passKey);
-      if (res?.error) {
-        const msg = res.error.toLowerCase();
-        if (msg.includes("not found")) {
-          alert("That team does not exist.");
-        } else if (msg.includes("invalid passkey")) {
-          alert("Incorrect passkey.");
-        } else if (msg.includes("already")) {
-          alert("You are already a member of this team.");
-        } else {
-          alert(res.error);
-        }
-        return;
+    const res = await getTeamByCoach(backendUserId.value);
+    teamInfo.value = res && !res.error ? res : null;
+  } catch (e) {
+    teamInfo.value = null;
+  }
+}
+
+async function loadTeam() {
+  if (!backendUserId.value) return;
+  const role = backendProfile.value?.role;
+  if (role === "athlete") return loadTeamForAthlete();
+  if (role === "coach") return loadTeamForCoach();
+  teamInfo.value = null;
+}
+
+function openJoinTeam() {
+  if (!backendUserId.value) return;
+  if (backendProfile.value?.role !== "athlete") {
+    console.warn("Only athletes can join teams.");
+    return;
+  }
+  joinForm.title = "";
+  joinForm.passKey = "";
+  showJoinModal.value = true;
+}
+
+async function submitJoinTeam() {
+  const title = joinForm.title.trim();
+  const passKey = joinForm.passKey.trim();
+
+  if (!title || !passKey) {
+    toast.error("Please fill in all fields.");
+    return;
+  }
+
+  try {
+    const res = await joinTeam(backendUserId.value, title, passKey);
+    if (res?.error) {
+      const msg = res.error.toLowerCase();
+      if (msg.includes("not found")) {
+        toast.error("That team does not exist.");
+      } else if (msg.includes("invalid passkey")) {
+        toast.error("Incorrect passkey.");
+      } else if (msg.includes("already")) {
+        toast.warning("You are already a member of this team.");
+      } else {
+        toast.error(res.error);
       }
-      alert(`Joined team "${title}"`);
-      await loadTeamForAthlete();
-    } catch (e) {
-      console.error("[Profile] Failed to join team:", e);
-      alert("Failed to join team.");
+      return;
     }
-  })();
+    toast.success(`Joined team "${title}"!`);
+    showJoinModal.value = false;
+    await loadTeamForAthlete();
+  } catch (e) {
+    console.error("[Profile] Failed to join team:", e);
+    toast.error("Failed to join team.");
+  }
 }
 
 function openCreateTeam() {
-  (async () => {
-    if (!backendUserId.value) return;
-    if (backendProfile.value?.role !== "coach") {
-      console.warn("Only coaches can create teams.");
-      return;
-    }
-    const title = window.prompt("Team name?")?.trim();
-    if (!title) return;
-    const passKey = window.prompt("Team passKey?")?.trim();
-    if (!passKey) return;
-    try {
-      const res = await createTeam(backendUserId.value, title, passKey);
-      console.log("[Profile] createTeam response:", res);
-      if (res?.error) {
-        alert(res.error);
-      } else {
-        alert(`Team "${res.newTeam?.name || title}" created`);
-      }
-    } catch (e) {
-      console.error("[Profile] Failed to create team:", e);
-      alert("Failed to create team.");
-    }
-  })();
+  if (!backendUserId.value) return;
+  if (backendProfile.value?.role !== "coach") {
+    console.warn("Only coaches can create teams.");
+    return;
+  }
+  createForm.title = "";
+  createForm.passKey = "";
+  showCreateModal.value = true;
 }
 
-async function onLeaveTeam() {
+async function submitCreateTeam() {
+  const title = createForm.title.trim();
+  const passKey = createForm.passKey.trim();
+
+  if (!title || !passKey) {
+    toast.error("Please fill in all fields.");
+    return;
+  }
+
+  try {
+    const res = await createTeam(backendUserId.value, title, passKey);
+    console.log("[Profile] createTeam response:", res);
+    if (res?.error) {
+      toast.error(res.error);
+    } else {
+      showCreateModal.value = false;
+      await loadTeam();
+    }
+  } catch (e) {
+    console.error("[Profile] Failed to create team:", e);
+    toast.error("Failed to create team.");
+  }
+}
+
+function onLeaveTeam() {
+  if (!backendUserId.value || !teamInfo.value?.name) return;
+  showLeaveModal.value = true;
+}
+
+async function confirmLeaveTeam() {
   try {
     if (!backendUserId.value || !teamInfo.value?.name) return;
-    const ok = window.confirm(`Leave team "${teamInfo.value.name}"?`);
-    if (!ok) return;
     const res = await leaveTeam(backendUserId.value, teamInfo.value.name);
     if (res?.error) {
-      alert(res.error);
+      toast.error(res.error);
       return;
     }
+    showLeaveModal.value = false;
     teamInfo.value = null;
-    alert("You left the team.");
+    await loadTeam(); // Refresh team data
   } catch (e) {
-    alert("Failed to leave team.");
+    toast.error("Failed to leave team.");
+  }
+}
+
+function onDisbandTeam() {
+  if (!backendUserId.value || !teamInfo.value?.name) return;
+  showDisbandModal.value = true;
+}
+
+async function confirmDisbandTeam() {
+  try {
+    if (!backendUserId.value || !teamInfo.value?.name) return;
+    const res = await deleteTeam(backendUserId.value, teamInfo.value.name);
+    if (res?.error) {
+      toast.error(res.error);
+      return;
+    }
+    showDisbandModal.value = false;
+    teamInfo.value = null;
+    await loadTeam();
+    toast.success("Team disbanded!");
+  } catch (e) {
+    toast.error("Failed to disband team.");
   }
 }
 </script>
@@ -255,12 +386,9 @@ async function onLeaveTeam() {
           <div class="account-info">
             <div class="name-row">
               <span class="name">{{ user.displayName || "—" }}</span>
-              <span
-                v-if="backendProfile?.role === 'athlete' && teamInfo?.name"
-                class="team-chip"
-                title="Your team"
-                >{{ teamInfo.name }}</span
-              >
+              <span v-if="teamInfo?.name" class="team-chip" title="Your team">{{
+                teamInfo.name
+              }}</span>
             </div>
             <div class="email">{{ user.email || "—" }}</div>
           </div>
@@ -369,7 +497,20 @@ async function onLeaveTeam() {
           </div>
         </template>
         <template v-else-if="backendProfile?.role === 'coach'">
-          <div class="row">
+          <div class="row" v-if="teamInfo?.name">
+            <div class="label">Name</div>
+            <div class="value">{{ teamInfo.name }}</div>
+            <div class="edit">
+              <button
+                class="btn-secondary"
+                :disabled="!backendUserId"
+                @click="onDisbandTeam"
+              >
+                Disband Team
+              </button>
+            </div>
+          </div>
+          <div class="row" v-else>
             <div class="label">Create a team</div>
             <div class="edit">
               <button
@@ -386,6 +527,157 @@ async function onLeaveTeam() {
           <div class="muted">Set your role to manage team membership.</div>
         </template>
       </section>
+    </div>
+
+    <!-- Join Team Modal -->
+    <div
+      v-if="showJoinModal"
+      class="modal-overlay"
+      @click="showJoinModal = false"
+    >
+      <div class="modal-content" @click.stop>
+        <h2 class="modal-title">Join a Team</h2>
+        <div class="modal-form">
+          <div class="form-group">
+            <label for="join-title" class="form-label">Team Name</label>
+            <input
+              id="join-title"
+              v-model="joinForm.title"
+              type="text"
+              class="form-input"
+              placeholder="Enter team name"
+              @keyup.enter="submitJoinTeam"
+            />
+          </div>
+          <div class="form-group">
+            <label for="join-passkey" class="form-label">Team Passkey</label>
+            <input
+              id="join-passkey"
+              v-model="joinForm.passKey"
+              type="password"
+              class="form-input"
+              placeholder="Enter passkey"
+              @keyup.enter="submitJoinTeam"
+            />
+          </div>
+          <div class="modal-actions">
+            <button
+              class="modal-btn modal-btn-secondary"
+              @click="showJoinModal = false"
+            >
+              Cancel
+            </button>
+            <button class="modal-btn modal-btn-primary" @click="submitJoinTeam">
+              Join Team
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create Team Modal -->
+    <div
+      v-if="showCreateModal"
+      class="modal-overlay"
+      @click="showCreateModal = false"
+    >
+      <div class="modal-content" @click.stop>
+        <h2 class="modal-title">Create a Team</h2>
+        <div class="modal-form">
+          <div class="form-group">
+            <label for="create-title" class="form-label">Team Name</label>
+            <input
+              id="create-title"
+              v-model="createForm.title"
+              type="text"
+              class="form-input"
+              placeholder="Enter team name"
+              @keyup.enter="submitCreateTeam"
+            />
+          </div>
+          <div class="form-group">
+            <label for="create-passkey" class="form-label">Team Passkey</label>
+            <input
+              id="create-passkey"
+              v-model="createForm.passKey"
+              type="password"
+              class="form-input"
+              placeholder="Create a passkey"
+              @keyup.enter="submitCreateTeam"
+            />
+          </div>
+          <div class="modal-actions">
+            <button
+              class="modal-btn modal-btn-secondary"
+              @click="showCreateModal = false"
+            >
+              Cancel
+            </button>
+            <button
+              class="modal-btn modal-btn-primary"
+              @click="submitCreateTeam"
+            >
+              Create Team
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Leave Team Confirmation Modal -->
+    <div
+      v-if="showLeaveModal"
+      class="modal-overlay"
+      @click="showLeaveModal = false"
+    >
+      <div class="modal-content confirmation-modal" @click.stop>
+        <h2 class="modal-title">Leave Team</h2>
+        <p class="confirmation-message">
+          Are you sure you want to leave <strong>{{ teamInfo?.name }}</strong
+          >?
+        </p>
+        <div class="modal-actions">
+          <button
+            class="modal-btn modal-btn-secondary"
+            @click="showLeaveModal = false"
+          >
+            Cancel
+          </button>
+          <button class="modal-btn modal-btn-danger" @click="confirmLeaveTeam">
+            Leave Team
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Disband Team Confirmation Modal -->
+    <div
+      v-if="showDisbandModal"
+      class="modal-overlay"
+      @click="showDisbandModal = false"
+    >
+      <div class="modal-content confirmation-modal" @click.stop>
+        <h2 class="modal-title">Disband Team</h2>
+        <p class="confirmation-message">
+          Are you sure you want to disband <strong>{{ teamInfo?.name }}</strong
+          >?
+        </p>
+        <p class="confirmation-warning">This action cannot be undone.</p>
+        <div class="modal-actions">
+          <button
+            class="modal-btn modal-btn-secondary"
+            @click="showDisbandModal = false"
+          >
+            Cancel
+          </button>
+          <button
+            class="modal-btn modal-btn-danger"
+            @click="confirmDisbandTeam"
+          >
+            Disband Team
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -491,7 +783,7 @@ async function onLeaveTeam() {
 .name-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px; /* tighter spacing between name and team */
   flex-wrap: wrap;
 }
 .account-info .name {
@@ -504,9 +796,199 @@ async function onLeaveTeam() {
   border-radius: 999px;
   background: var(--accent-100);
   color: var(--color-accent);
+  margin-left: 2px;
 }
 .account-info .email {
   font-size: 0.9rem;
   color: var(--vt-c-text-light-2);
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.modal-content {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 32px;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.3s ease;
+  border: 1px solid #e0e0e0;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.modal-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #750014;
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #666666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-input {
+  padding: 12px 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 10px;
+  background: #f5f5f5;
+  color: #000000;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+  outline: none;
+}
+
+.form-input::placeholder {
+  color: #999999;
+}
+
+.form-input:focus {
+  border-color: #750014;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(117, 0, 20, 0.1);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.modal-btn {
+  flex: 1;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  outline: none;
+}
+
+.modal-btn-primary {
+  background: #750014;
+  color: #ffffff;
+  box-shadow: 0 4px 15px rgba(117, 0, 20, 0.3);
+}
+
+.modal-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(117, 0, 20, 0.4);
+  background: #8b0019;
+}
+
+.modal-btn-primary:active {
+  transform: translateY(0);
+}
+
+.modal-btn-secondary {
+  background: #f5f5f5;
+  color: #333333;
+  border: 1px solid #e0e0e0;
+}
+
+.modal-btn-secondary:hover {
+  background: #e0e0e0;
+  border-color: #cccccc;
+}
+
+.modal-btn-danger {
+  background: #750014;
+  color: #ffffff;
+  box-shadow: 0 4px 15px rgba(117, 0, 20, 0.3);
+}
+
+.modal-btn-danger:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(117, 0, 20, 0.4);
+  background: #8b0019;
+}
+
+.modal-btn-danger:active {
+  transform: translateY(0);
+}
+
+/* Confirmation Modal */
+.confirmation-modal {
+  max-width: 450px;
+  text-align: center;
+}
+
+.confirmation-message {
+  font-size: 1.1rem;
+  color: #333333;
+  margin-bottom: 16px;
+  line-height: 1.6;
+}
+
+.confirmation-message strong {
+  color: #750014;
+  font-weight: 700;
+}
+
+.confirmation-warning {
+  font-size: 0.95rem;
+  color: #666666;
+  font-style: italic;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 500px) {
+  .modal-content {
+    min-width: 90%;
+    padding: 24px;
+  }
 }
 </style>
