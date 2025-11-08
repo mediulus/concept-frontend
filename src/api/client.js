@@ -12,6 +12,15 @@ const api = axios.create({
   withCredentials: false,
 });
 
+console.log('[API] baseURL from axios:', api.defaults.baseURL);
+
+// TEMP: log final URL for every request
+api.interceptors.request.use((config) => {
+  const full = `${(config.baseURL ?? '').replace(/\/+$/, '')}/${String(config.url ?? '').replace(/^\/+/, '')}`;
+  console.log('[API] →', config.method?.toUpperCase(), full);
+  return config;
+});
+
 // Attach Firebase ID token if user is signed in
 api.interceptors.request.use(
   async (config) => {
