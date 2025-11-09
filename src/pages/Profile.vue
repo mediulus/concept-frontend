@@ -29,6 +29,9 @@ const drafts = reactive({ mileage: null, role: null, gender: null });
 // Backend user id - will be set by onMounted or user watcher
 const backendUserId = ref(null);
 
+// Flag to prevent multiple simultaneous profile loads
+let isLoadingProfile = false;
+
 // Modal state
 const showJoinModal = ref(false);
 const showCreateModal = ref(false);
@@ -69,11 +72,24 @@ function openRoleEditor() {
 }
 
 async function saveRoleLocal() {
+  console.log("[Profile] saveRoleLocal called with backendUserId:", backendUserId.value, "role:", drafts.role);
+  
   if (!backendUserId.value) {
-    console.warn("No backend userId found; cannot save role.");
+    console.warn("[Profile] No backend userId found; cannot save role.");
+    console.log("[Profile] Checking storage...");
+    console.log("[Profile] window.__tt_userId:", typeof window !== "undefined" ? window.__tt_userId : "N/A");
+    console.log("[Profile] localStorage.tt_userId:", typeof localStorage !== "undefined" ? localStorage.getItem("tt_userId") : "N/A");
+    toast.error("Please wait for profile to load, then try again.");
     return;
   }
+  
+  if (!drafts.role) {
+    toast.error("Please select a role.");
+    return;
+  }
+  
   try {
+    console.log("[Profile] Calling editUserRole with userId:", backendUserId.value, "role:", drafts.role);
     const res = await editUserRole(backendUserId.value, drafts.role);
     console.log("[Profile] Saved role response:", res);
 
@@ -85,7 +101,10 @@ async function saveRoleLocal() {
 
     // refresh backend profile
     const u = await getUser(backendUserId.value);
-    if (!u.error) backendProfile.value = u;
+    if (!u.error) {
+      backendProfile.value = u;
+      toast.success(`Role set to ${drafts.role}!`);
+    }
     editing.role = false;
   } catch (e) {
     console.error("[Profile] Failed to save role:", e);
@@ -127,43 +146,132 @@ async function loadBackendProfile() {
       console.log("[Profile] loadBackendProfile: no backendUserId");
       return;
     }
+    
+    // Prevent multiple simultaneous loads
+    if (isLoadingProfile) {
+      console.log("[Profile] Already loading profile, skipping...");
+      return;
+    }
+    
+    isLoadingProfile = true;
     console.log("[Profile] Loading profile for userId:", backendUserId.value);
     const u = await getUser(backendUserId.value);
     console.log("[Profile] getUser response:", u);
+    
     if (!u?.error) {
+      const hadProfile = !!backendProfile.value;
+      const hadRole = backendProfile.value?.role;
       backendProfile.value = u;
       console.log("[Profile] backendProfile set to:", backendProfile.value);
+      
+      // Auto-open role editor ONLY if:
+      // 1. User has no role
+      // 2. Editor is not already open
+      // 3. This is the first time loading the profile (or role was just cleared)
+      if (!u.role && !editing.role && (!hadProfile || !hadRole)) {
+        console.log("[Profile] User has no role set, opening role editor after delay");
+        setTimeout(() => {
+          // Double-check backendUserId is still set and editor not already open
+          if (backendUserId.value && !editing.role) {
+            editing.role = true;
+            drafts.role = null;
+            console.log("[Profile] Role editor opened with backendUserId:", backendUserId.value);
+          } else {
+            console.warn("[Profile] Not opening role editor - conditions not met");
+          }
+        }, 300);
+      }
     } else {
       console.warn("[Profile] getUser returned error:", u?.error);
     }
   } catch (e) {
     console.warn("[Profile] Failed to load backend profile:", e);
+  } finally {
+    isLoadingProfile = false;
   }
 }
 
 onMounted(async () => {
-  // Try to hydrate backendUserId from window/localStorage if missing
-  if (!backendUserId.value) {
+  console.log("[Profile] onMounted - checking for existing userId");
+  
+  // Aggressively check for userId multiple times on mount
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (backendUserId.value) break;
+    
     try {
       if (typeof window !== "undefined" && window.__tt_userId) {
+        console.log("[Profile] Found userId in window:", window.__tt_userId);
         backendUserId.value = window.__tt_userId;
+        break;
       } else if (typeof localStorage !== "undefined") {
         const cached = localStorage.getItem("tt_userId");
-        if (cached) backendUserId.value = cached;
+        if (cached) {
+          console.log("[Profile] Found userId in localStorage:", cached);
+          backendUserId.value = cached;
+          break;
+        }
       }
-    } catch {}
+    } catch (e) {
+      console.error("[Profile] Error loading userId:", e);
+    }
+    
+    if (attempt < 4) {
+      console.log(`[Profile] onMounted attempt ${attempt + 1}/5 - waiting 100ms...`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
   }
+  
+  if (backendUserId.value) {
+    console.log("[Profile] backendUserId set in onMounted:", backendUserId.value);
+  } else {
+    console.log("[Profile] No backendUserId found in onMounted");
+  }
+  
   await loadBackendProfile();
   await loadTeam();
 });
 
-watch(backendUserId, async (val) => {
-  console.log("[Profile] backendUserId watcher triggered with:", val);
-  if (val) {
+watch(backendUserId, async (val, oldVal) => {
+  console.log("[Profile] backendUserId watcher triggered. old:", oldVal, "new:", val);
+  if (val && val !== oldVal) {
+    console.log("[Profile] Loading profile for new userId:", val);
     await loadBackendProfile();
     await loadTeam();
   }
 });
+
+// Fallback: Poll for userId changes every 500ms for the first 10 seconds after mount
+let pollCount = 0;
+const maxPolls = 20; // 20 * 500ms = 10 seconds
+const pollInterval = setInterval(() => {
+  pollCount++;
+  
+  if (backendUserId.value || pollCount >= maxPolls) {
+    clearInterval(pollInterval);
+    if (backendUserId.value) {
+      console.log("[Profile] Polling found userId:", backendUserId.value);
+    } else {
+      console.log("[Profile] Polling stopped after", maxPolls, "attempts");
+    }
+    return;
+  }
+  
+  try {
+    let uid = null;
+    if (typeof window !== "undefined" && window.__tt_userId) {
+      uid = window.__tt_userId;
+    } else if (typeof localStorage !== "undefined") {
+      uid = localStorage.getItem("tt_userId");
+    }
+    
+    if (uid && uid !== backendUserId.value) {
+      console.log(`[Profile] Polling found userId on attempt ${pollCount}:`, uid);
+      backendUserId.value = uid;
+    }
+  } catch (e) {
+    console.error("[Profile] Polling error:", e);
+  }
+}, 500);
 
 watch(
   user,
@@ -185,10 +293,10 @@ watch(
     }
 
     // If user signs in, pick up backend id (the backendUserId watcher will load the data)
-    if (newUser) {
+    if (newUser && !backendUserId.value) {
       console.log("[Profile] User signed in, looking for backend userId...");
-      // Retry a few times to wait for signInWithGoogleAndRegister to complete
-      for (let i = 0; i < 20; i++) {
+      // Retry multiple times to wait for signInWithGoogleAndRegister to complete
+      for (let i = 0; i < 40; i++) {
         try {
           let uid = null;
           if (typeof window !== "undefined" && window.__tt_userId) {
@@ -202,18 +310,21 @@ watch(
             backendUserId.value = uid;
             return;
           }
-        } catch {}
+        } catch (e) {
+          console.error("[Profile] Error checking for userId:", e);
+        }
 
         console.log(
-          `[Profile] Retry ${i + 1}/20 - backend userId not found yet`
+          `[Profile] Retry ${i + 1}/40 - backend userId not found yet`
         );
-        // Wait 100ms before trying again (increased from 50ms)
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // Wait 200ms before trying again to give backend more time
+        await new Promise((resolve) => setTimeout(resolve, 200));
       }
-      console.warn("[Profile] Failed to find backend userId after 20 retries");
+      console.warn("[Profile] Failed to find backend userId after 40 retries (8s)");
+      toast.error("Failed to load user profile. Please refresh the page.");
     }
   },
-  { flush: "post" }
+  { immediate: true, flush: "post" }
 );
 
 async function loadTeamForAthlete() {
@@ -412,8 +523,14 @@ async function confirmDisbandTeam() {
               <option value="athlete">Athlete</option>
               <option value="coach">Coach</option>
             </select>
-            <button class="btn" @click="saveRoleLocal">Save</button>
-            <button class="btn-secondary" @click="editing.role = false">
+            <button 
+              class="btn" 
+              @click="saveRoleLocal"
+              :disabled="!backendUserId || !drafts.role"
+            >
+              Save
+            </button>
+            <button class="btn-secondary" @click="editing.role = false" v-if="backendProfile?.role">
               Cancel
             </button>
           </div>
@@ -755,9 +872,16 @@ async function confirmDisbandTeam() {
   border-radius: 8px;
   padding: 6px 10px;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--accent-700);
+}
+.btn:disabled {
+  background: var(--gray-300);
+  color: var(--gray-500);
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 .btn-secondary {
   background: transparent;
@@ -772,6 +896,16 @@ async function confirmDisbandTeam() {
 }
 .muted {
   color: var(--vt-c-text-light-2);
+}
+.welcome-message {
+  background: var(--accent-100);
+  color: var(--color-accent);
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-weight: 600;
+  text-align: center;
+  border: 1px solid var(--color-accent);
 }
 
 /* Account header */
