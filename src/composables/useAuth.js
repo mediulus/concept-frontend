@@ -36,11 +36,11 @@ export function useAuth() {
         const cred = await signInWithGoogle();
         const tokenToSend = await cred.user.getIdToken();
         console.log("[useAuth] Got Firebase token, calling backend...");
-        
+
         // 2) Call backend UserDirectory to upsert user using idToken
         const res = await loginWithGoogleIdToken(tokenToSend);
         console.log("[useAuth] Backend response:", res);
-        
+
         if (res && !res.error && res.userId) {
           // Persist backend user id for API calls
           try {
